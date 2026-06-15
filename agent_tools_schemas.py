@@ -373,6 +373,47 @@ schema_diff_file = types.FunctionDeclaration(
 )
 
 
+schema_edit_docstring = types.FunctionDeclaration(
+    name="edit_docstring",
+    description=(
+        "Replace, insert, or remove the docstring of a function, method, or class in a Python file. "
+        "Prefer this over patch_file whenever only a docstring needs to change — it uses the AST to "
+        "locate the exact line span, so you never have to reproduce surrounding source text verbatim."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "file_path": types.Schema(
+                type=types.Type.STRING,
+                description="Path to the Python source file to edit, relative to the working directory.",
+            ),
+            "function_name": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "Name of the function, method, or class whose docstring should be updated. "
+                    "Use parse_symbols() first if you are unsure of the exact name."
+                ),
+            ),
+            "new_docstring": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "The new docstring text, without triple-quotes or indentation — those are added automatically. "
+                    "Pass an empty string to remove an existing docstring entirely."
+                ),
+            ),
+            "parent_class": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "Enclosing class name, required when targeting a method to disambiguate it from "
+                    "a free function with the same name. Omit for top-level functions and classes."
+                ),
+            ),
+        },
+        required=["file_path", "function_name", "new_docstring"],
+    ),
+)
+
+
 # ─────────────────────────────────────────────
 # TOOL LIST  (pass directly to the Gemini API)
 # ─────────────────────────────────────────────
@@ -397,5 +438,7 @@ ALL_TOOLS = types.Tool(
         # Validation
         schema_check_syntax,
         schema_diff_file,
+        # Docstring edit
+        schema_edit_docstring,
     ]
 )

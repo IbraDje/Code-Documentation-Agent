@@ -31,6 +31,7 @@ from agent_tools import (
     read_environment_schema,
     check_syntax,
     diff_file,
+    edit_docstring
 )
 from agent_tools_schemas import ALL_TOOLS
 
@@ -72,6 +73,7 @@ TOOLS_WITH_WORKING_DIR: dict[str, Callable] = {
     "read_environment_schema":read_environment_schema,
     "check_syntax":           check_syntax,
     "diff_file":              diff_file,
+    "edit_docstring":         edit_docstring,
 }
 
 # Tools that do NOT receive working_dir (use session state instead)

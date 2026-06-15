@@ -1268,3 +1268,170 @@ def diff_file(
         return f"UnicodeDecodeError: '{file_path}' is not valid UTF-8 and cannot be read as text."
     except OSError as e:
         return f"OSError: could not read '{file_path}': {e}"
+
+
+def edit_docstring(
+    working_dir: str,
+    file_path: str,
+    function_name: str,
+    new_docstring: str,
+    parent_class: str | None = None,
+) -> str:
+    """
+    Replace or insert the docstring of a function, method, or class in a
+    Python source file without touching any other code.
+
+    Uses the AST to locate the exact line span of the existing docstring (or
+    the insertion point when none exists), so the caller never has to reproduce
+    surrounding source text — unlike patch_file.
+
+    Args:
+        working_dir:    Root directory to restrict file access (not exposed to agent).
+        file_path:      Path to the Python source file (relative to working_dir).
+        function_name:  Name of the function, method, or class whose docstring
+                        should be updated.
+        new_docstring:  The raw docstring text (without surrounding triple-quotes
+                        or indentation — those are added automatically).
+                        Pass an empty string "" to remove an existing docstring.
+        parent_class:   When targeting a method, provide the enclosing class name
+                        to disambiguate from a free function with the same name.
+                        Ignored when targeting a class or top-level function.
+
+    Returns:
+        A success message describing what was done, or an error string prefixed
+        with the exception type (e.g. "FileNotFoundError: ...").
+    """
+    try:
+        abs_working_dir = os.path.realpath(working_dir)
+        abs_file_path   = os.path.realpath(os.path.join(abs_working_dir, file_path))
+
+        if not abs_file_path.startswith(abs_working_dir + os.sep) and abs_file_path != abs_working_dir:
+            return f"PermissionError: '{file_path}' resolves outside working directory '{working_dir}'."
+
+        if not os.path.exists(abs_file_path):
+            return f"FileNotFoundError: '{file_path}' does not exist."
+
+        if not os.path.isfile(abs_file_path):
+            return f"ValueError: '{file_path}' is not a file."
+
+        with open(abs_file_path, "r", encoding="utf-8") as f:
+            source = f.read()
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as e:
+            return f"SyntaxError: could not parse '{file_path}': {e}"
+
+        # ── 1. Find the target node ───────────────────────────────────────────
+
+        target_node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | None = None
+
+        def _search(nodes, inside_class: str | None = None) -> None:
+            nonlocal target_node
+            for node in nodes:
+                if isinstance(node, ast.ClassDef):
+                    if node.name == function_name and parent_class is None:
+                        target_node = node
+                        return
+                    _search(ast.iter_child_nodes(node), inside_class=node.name)
+
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name_match   = node.name == function_name
+                    parent_match = (parent_class is None and inside_class is None) or \
+                                   (parent_class is not None and inside_class == parent_class)
+                    if name_match and parent_match:
+                        target_node = node
+                        return
+                    # Search nested functions / inner classes
+                    _search(ast.iter_child_nodes(node), inside_class=None)
+
+        _search(ast.iter_child_nodes(tree))
+
+        if target_node is None:
+            qualifier = f" in class '{parent_class}'" if parent_class else ""
+            return (
+                f"LookupError: '{function_name}'{qualifier} not found in '{file_path}'. "
+                f"Use parse_symbols() to list available symbols."
+            )
+
+        # ── 2. Determine indentation ─────────────────────────────────────────
+        # The docstring must be one indent level inside the def/class header.
+        body_indent = " " * (target_node.col_offset + 4)
+
+        # ── 3. Build the replacement docstring block ──────────────────────────
+        def _build_docstring_block(text: str, indent: str) -> str:
+            """Return a properly indented triple-quoted docstring line block."""
+            lines = text.splitlines()
+            if len(lines) <= 1:
+                # Single-line form: """Summary line."""
+                return f'{indent}"""{text.strip()}"""\n'
+            else:
+                # Multi-line form with closing quotes on their own line
+                inner = "\n".join(f"{indent}{ln}" if ln.strip() else "" for ln in lines)
+                return f'{indent}"""\n{inner}\n{indent}"""\n'
+
+        # ── 4. Locate the existing docstring node (if any) ───────────────────
+        source_lines = source.splitlines(keepends=True)
+
+        first_stmt = target_node.body[0] if target_node.body else None
+        has_docstring = (
+            first_stmt is not None
+            and isinstance(first_stmt, ast.Expr)
+            and isinstance(first_stmt.value, ast.Constant)
+            and isinstance(first_stmt.value.value, str)
+        )
+
+        if has_docstring:
+            # Lines are 1-indexed in the AST
+            ds_start = first_stmt.lineno - 1        # inclusive, 0-indexed
+            ds_end   = first_stmt.end_lineno         # exclusive, 0-indexed
+
+            if new_docstring == "":
+                # Remove the docstring entirely
+                new_source_lines = source_lines[:ds_start] + source_lines[ds_end:]
+                action = "removed"
+            else:
+                new_block = _build_docstring_block(new_docstring, body_indent)
+                new_source_lines = (
+                    source_lines[:ds_start]
+                    + [new_block]
+                    + source_lines[ds_end:]
+                )
+                action = "updated"
+        else:
+            if new_docstring == "":
+                return f"NoOp: '{function_name}' in '{file_path}' has no docstring to remove."
+
+            # Insert after the last line of the def/class header.
+            # target_node.body[0].lineno points to the first statement in the body;
+            # we insert immediately before it.
+            insert_before = (first_stmt.lineno - 1) if first_stmt else target_node.lineno
+            new_block = _build_docstring_block(new_docstring, body_indent)
+            new_source_lines = (
+                source_lines[:insert_before]
+                + [new_block]
+                + source_lines[insert_before:]
+            )
+            action = "inserted"
+
+        new_source = "".join(new_source_lines)
+
+        # ── 5. Validate the result before writing ────────────────────────────
+        try:
+            ast.parse(new_source)
+        except SyntaxError as e:
+            return (
+                f"SyntaxError: the modified source is invalid — docstring was NOT written. "
+                f"Details: {e}"
+            )
+
+        with open(abs_file_path, "w", encoding="utf-8") as f:
+            f.write(new_source)
+
+        qualifier = f" (in class '{parent_class}')" if parent_class else ""
+        return f"Success: docstring {action} for '{function_name}'{qualifier} in '{file_path}'."
+
+    except UnicodeDecodeError:
+        return f"UnicodeDecodeError: '{file_path}' is not valid UTF-8 and cannot be read as text."
+    except OSError as e:
+        return f"OSError: could not edit docstring in '{file_path}': {e}"
