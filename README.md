@@ -17,7 +17,7 @@ uv sync
 
 ## Usage
 
-The agent is designed to interact with a codebase through a set of defined tools. It leverages the free-to-use Google Gemini LLM (`gemini-3.1-flash-lite`) to interpret source code and generate high-quality documentation following Google style guidelines.
+The agent is designed to interact with a codebase through a set of defined tools. It supports multiple underlying language models, prioritizing robust local AI deployments via Ollama for maximum privacy and cost-efficiency. While other providers may be configured, the core functionality is optimized for local usage with models managed by Ollama. Documentation quality remains high irrespective of the backend model used, adhering strictly to Google style guidelines.
 
 ## Architecture
 
